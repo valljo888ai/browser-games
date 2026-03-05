@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TOP-DOWN SHOOTER</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; width: 100vw; height: 100vh; }
+  canvas { display: block; cursor: crosshair; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+// --- Resize ---
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- Constants ---
+const STATES = { MENU: 0, PLAYING: 1, LEVEL_COMPLETE: 2, GAME_OVER: 3 };
+const COLORS = {
+  bg: '#0a0a1a',
+  grid: '#0d0d2a',
+  player: '#00e5ff',
+  playerHead: '#b2ebf2',
+  gun: '#ffffff',
+  bullet: '#ffee58',
+  bulletTrail: '#ff8f00',
+  grunt: '#ef5350',
+  runner: '#ff9800',
+  bruiser: '#ab47bc',
+  hud: '#ffffff',
+  hudAccent: '#00e5ff',
+  heart: '#f44336',
+  heartEmpty: '#333',
+  levelComplete: '#00e5ff',
+  gameOver: '#ef5350',
+  menuTitle: '#00e5ff',
+  menuSub: '#ffffff',
+};
+
+const ENEMY_TYPES = {
+  grunt:   { color: COLORS.grunt,   speed: 80,  hp: 1, size: 14, score: 10,  label: 'GRUNT' },
+  runner:  { color: COLORS.runner,  speed: 160, hp: 1, size: 11, score: 20,  label: 'RUNNER' },
+  bruiser: { color: COLORS.bruiser, speed: 50,  hp: 3, size: 20, score: 50,  label: 'BRUISER' },
+};
+
+// --- State ---
+let state = STATES.MENU;
+let player, bullets, enemies, particles, level, score, waveScore;
+let enemiesLeft, enemiesToSpawn, spawnTimer, spawnInterval;
+let screenShake = 0;
+let levelCompleteTimer = 0;
+let keys = {};
+let mouse = { x: 0, y: 0, down: false };
+let shootCooldown = 0;
+let menuAnimT = 0;
+let lastTime = 0;
+let gridOffset = 0;
+
+// --- Input ---
+window.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault && (e.code.startsWith('Arrow') || e.code === 'Space') && e.preventDefault(); });
+window.addEventListener('keyup',   e => { keys[e.code] = false; });
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
+canvas.addEventListener('mouseup',   e => { if (e.button === 0) mouse.down = false; });
+canvas.addEventListener('click', handleClick);
+
+function handleClick(e) {
+  if (state === STATES.MENU) startGame();
+  else if (state === STATES.GAME_OVER) startGame();
+}
+
+// --- Init ---
+function startGame() {
+  level = 1;
+  score = 0;
+  waveScore = 0;
+  player = createPlayer();
+  bullets = [];
+  enemies = [];
+  particles = [];
+  startWave();
+  state = STATES.PLAYING;
+}
+
+function createPlayer() {
+  return {
+    x: canvas.width / 2,
+    y: canvas.height / 2,
+    speed: 220,
+    hp: 5,
+    maxHp: 5,
+    angle: 0,
+    invincible: 0,
+    bobT: 0,
+    moving: false,
+  };
+}
+
+function startWave() {
+  enemiesToSpawn = 5 + level * 3;
+  enemiesLeft = enemiesToSpawn;
+  spawnTimer = 0;
+  spawnInterval = Math.max(0.4, 1.5 - level * 0.08);
+  waveScore = 0;
+  enemies = [];
+  bullets = [];
+}
+
+// --- Spawn ---
+function spawnEnemy() {
+  const types = ['grunt'];
+  if (level >= 3) types.push('runner');
+  if (level >= 5) types.push('bruiser');
+
+  const type = types[Math.floor(Math.random() * types.length)];
+  const def = ENEMY_TYPES[type];
+
+  // Random edge
+  let x, y;
+  const edge = Math.floor(Math.random() * 4);
+  const margin = 30;
+  if (edge === 0) { x = Math.random() * canvas.width; y = -margin; }
+  else if (edge === 1) { x = canvas.width + margin; y = Math.random() * canvas.height; }
+  else if (edge === 2) { x = Math.random() * canvas.width; y = canvas.height + margin; }
+  else { x = -margin; y = Math.random() * canvas.height; }
+
+  const speedScale = 1 + (level - 1) * 0.07;
+  const hpScale = type === 'bruiser' ? 1 + Math.floor((level - 5) / 2) : 1;
+
+  enemies.push({
+    x, y,
+    type,
+    color: def.color,
+    speed: def.speed * speedScale,
+    hp: def.hp + (type === 'bruiser' ? Math.max(0, hpScale - 1) * 2 : 0),
+    maxHp: def.hp + (type === 'bruiser' ? Math.max(0, hpScale - 1) * 2 : 0),
+    size: def.size,
+    score: def.score,
+    flashT: 0,
+    wobbleT: Math.random() * Math.PI * 2,
+  });
+}
+
+// --- Particles ---
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 60 + Math.random() * 180;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 0.4 + Math.random() * 0.4,
+      maxLife: 0,
+      color,
+      size: 2 + Math.random() * 4,
+    });
+    particles[particles.length - 1].maxLife = particles[particles.length - 1].life;
+  }
+}
+
+// --- Update ---
+function update(dt) {
+  if (state === STATES.MENU) { menuAnimT += dt; return; }
+  if (state === STATES.LEVEL_COMPLETE) {
+    levelCompleteTimer -= dt;
+    if (levelCompleteTimer <= 0) {
+      level++;
+      startWave();
+      state = STATES.PLAYING;
+    }
+    return;
+  }
+  if (state === STATES.GAME_OVER) return;
+
+  // Grid scroll
+  gridOffset = (gridOffset + dt * 20) % 40;
+
+  // Screen shake decay
+  screenShake = Math.max(0, screenShake - dt * 8);
+
+  // Player movement
+  let dx = 0, dy = 0;
+  if (keys['ArrowLeft']  || keys['KeyA']) dx -= 1;
+  if (keys['ArrowRight'] || keys['KeyD']) dx += 1;
+  if (keys['ArrowUp']    || keys['KeyW']) dy -= 1;
+  if (keys['ArrowDown']  || keys['KeyS']) dy += 1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 0) { dx /= len; dy /= len; }
+  player.moving = len > 0;
+  if (player.moving) player.bobT += dt * 10;
+
+  player.x = Math.max(20, Math.min(canvas.width  - 20, player.x + dx * player.speed * dt));
+  player.y = Math.max(20, Math.min(canvas.height - 20, player.y + dy * player.speed * dt));
+
+  // Aim
+  player.angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+
+  // Shoot
+  shootCooldown = Math.max(0, shootCooldown - dt);
+  if ((mouse.down) && shootCooldown <= 0) {
+    shootCooldown = 0.15;
+    const bx = player.x + Math.cos(player.angle) * 18;
+    const by = player.y + Math.sin(player.angle) * 18;
+    bullets.push({
+      x: bx, y: by,
+      vx: Math.cos(player.angle) * 600,
+      vy: Math.sin(player.angle) * 600,
+      trail: [],
+      life: 2,
+    });
+  }
+
+  // Update bullets
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.trail.unshift({ x: b.x, y: b.y });
+    if (b.trail.length > 5) b.trail.pop();
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    if (b.life <= 0 || b.x < -20 || b.x > canvas.width + 20 || b.y < -20 || b.y > canvas.height + 20) {
+      bullets.splice(i, 1);
+      continue;
+    }
+    // Hit enemy
+    let hit = false;
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      const dist = Math.hypot(b.x - e.x, b.y - e.y);
+      if (dist < e.size + 4) {
+        e.hp--;
+        e.flashT = 0.12;
+        bullets.splice(i, 1);
+        hit = true;
+        if (e.hp <= 0) {
+          spawnParticles(e.x, e.y, e.color, 12);
+          score += e.score;
+          waveScore += e.score;
+          enemies.splice(j, 1);
+          enemiesLeft--;
+          if (enemiesLeft <= 0 && enemiesToSpawn <= 0) {
+            // Wave clear bonus
+            score += Math.floor(100 * level);
+            state = STATES.LEVEL_COMPLETE;
+            levelCompleteTimer = 3;
+          }
+        }
+        break;
+      }
+    }
+    if (hit) continue;
+  }
+
+  // Spawn enemies
+  if (enemiesToSpawn > 0) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnTimer = spawnInterval;
+      spawnEnemy();
+      enemiesToSpawn--;
+    }
+  }
+
+  // Update enemies
+  player.invincible = Math.max(0, player.invincible - dt);
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    e.flashT = Math.max(0, e.flashT - dt);
+    e.wobbleT += dt * 3;
+
+    const ex = player.x - e.x;
+    const ey = player.y - e.y;
+    const d = Math.sqrt(ex * ex + ey * ey);
+    if (d > 0) {
+      e.x += (ex / d) * e.speed * dt;
+      e.y += (ey / d) * e.speed * dt;
+    }
+
+    // Hit player
+    if (d < e.size + 16 && player.invincible <= 0) {
+      player.hp--;
+      player.invincible = 1.5;
+      screenShake = 0.35;
+      if (player.hp <= 0) {
+        spawnParticles(player.x, player.y, COLORS.player, 20);
+        state = STATES.GAME_OVER;
+      }
+    }
+  }
+
+  // Update particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 1 - dt * 4;
+    p.vy *= 1 - dt * 4;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// --- Draw helpers ---
+function drawGrid() {
+  const size = 40;
+  ctx.strokeStyle = COLORS.grid;
+  ctx.lineWidth = 1;
+  const ox = gridOffset % size;
+  for (let x = -ox; x < canvas.width + size; x += size) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+  }
+  for (let y = -ox; y < canvas.height + size; y += size) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+  }
+}
+
+function drawPlayer() {
+  const p = player;
+  if (p.invincible > 0 && Math.floor(p.invincible * 10) % 2 === 0) return;
+
+  const bob = p.moving ? Math.sin(p.bobT) * 2 : 0;
+
+  ctx.save();
+  ctx.translate(p.x, p.y + bob);
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(0, 8, 12, 5, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Body
+  ctx.fillStyle = COLORS.player;
+  ctx.beginPath(); ctx.ellipse(0, 2, 11, 13, 0, 0, Math.PI * 2); ctx.fill();
+
+  // Body highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  ctx.beginPath(); ctx.ellipse(-3, -2, 5, 7, -0.3, 0, Math.PI * 2); ctx.fill();
+
+  // Head
+  ctx.fillStyle = COLORS.playerHead;
+  ctx.beginPath(); ctx.arc(0, -8, 8, 0, Math.PI * 2); ctx.fill();
+
+  // Eyes
+  const eyeX = Math.cos(p.angle) * 3;
+  const eyeY = Math.sin(p.angle) * 3;
+  ctx.fillStyle = '#001';
+  ctx.beginPath(); ctx.arc(eyeX - Math.sin(p.angle)*3, eyeY + Math.cos(p.angle)*3 - 8, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(eyeX + Math.sin(p.angle)*3, eyeY - Math.cos(p.angle)*3 - 8, 2, 0, Math.PI * 2); ctx.fill();
+
+  // Gun arm
+  ctx.rotate(p.angle);
+  ctx.fillStyle = COLORS.gun;
+  ctx.fillRect(6, -3, 16, 6);
+  // Gun barrel
+  ctx.fillStyle = '#aaa';
+  ctx.fillRect(18, -2, 8, 4);
+  // Muzzle
+  if (shootCooldown > 0.12) {
+    ctx.fillStyle = '#ffee58';
+    ctx.beginPath(); ctx.arc(26, 0, 5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  const wobble = Math.sin(e.wobbleT) * 1.5;
+
+  const color = e.flashT > 0 ? '#ffffff' : e.color;
+
+  if (e.type === 'grunt') {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(0, wobble, e.size, 0, Math.PI * 2); ctx.fill();
+    // Eye
+    const angle = Math.atan2(player.y - e.y, player.x - e.x);
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(Math.cos(angle) * 5, Math.sin(angle) * 5 + wobble, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(Math.cos(angle) * 5 + 1, Math.sin(angle) * 5 + wobble - 1, 2, 0, Math.PI * 2); ctx.fill();
+    // Spikes
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * e.size, Math.sin(a) * e.size + wobble);
+      ctx.lineTo(Math.cos(a) * (e.size + 6), Math.sin(a) * (e.size + 6) + wobble); ctx.stroke();
+    }
+  } else if (e.type === 'runner') {
+    // Diamond shape
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, -e.size - wobble);
+    ctx.lineTo(e.size, 0);
+    ctx.lineTo(0, e.size + wobble);
+    ctx.lineTo(-e.size, 0);
+    ctx.closePath(); ctx.fill();
+    // Speed lines
+    const angle = Math.atan2(player.y - e.y, player.x - e.x) + Math.PI;
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 2;
+    for (let i = -1; i <= 1; i++) {
+      const la = angle + i * 0.3;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(la) * e.size, Math.sin(la) * e.size);
+      ctx.lineTo(Math.cos(la) * (e.size + 12), Math.sin(la) * (e.size + 12));
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  } else if (e.type === 'bruiser') {
+    // Chunky square with rounded corners
+    ctx.fillStyle = color;
+    roundRect(ctx, -e.size, -e.size + wobble, e.size * 2, e.size * 2, 4);
+    ctx.fill();
+    // HP bar
+    const barW = e.size * 2;
+    const barH = 4;
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-e.size, -e.size - 10 + wobble, barW, barH);
+    ctx.fillStyle = '#e040fb';
+    ctx.fillRect(-e.size, -e.size - 10 + wobble, barW * (e.hp / e.maxHp), barH);
+    // Face
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-5, -3 + wobble, 4, 6);
+    ctx.fillRect(1, -3 + wobble, 4, 6);
+  }
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawBullet(b) {
+  // Trail
+  for (let i = 0; i < b.trail.length; i++) {
+    const t = b.trail[i];
+    const alpha = (1 - i / b.trail.length) * 0.5;
+    ctx.fillStyle = COLORS.bulletTrail;
+    ctx.globalAlpha = alpha;
+    ctx.fillRect(t.x - 2, t.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+  // Bullet
+  ctx.fillStyle = COLORS.bullet;
+  ctx.fillRect(b.x - 4, b.y - 3, 8, 6);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(b.x - 2, b.y - 1, 4, 2);
+}
+
+function drawParticle(p) {
+  const alpha = p.life / p.maxLife;
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = p.color;
+  ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  const pad = 16;
+  // Health hearts
+  for (let i = 0; i < player.maxHp; i++) {
+    ctx.fillStyle = i < player.hp ? COLORS.heart : COLORS.heartEmpty;
+    drawHeart(pad + i * 28, pad, 12);
+  }
+
+  // Level / enemies left
+  const spawned = enemiesToSpawn <= 0 ? 0 : enemiesToSpawn;
+  const total = enemiesToSpawn + enemies.length;
+  const cleared = enemiesToSpawn <= 0 ? (enemiesLeft - enemies.length) : (enemiesToSpawn <= 0 ? enemiesLeft : 0);
+  const remaining = enemies.length + enemiesToSpawn;
+
+  ctx.font = 'bold 18px monospace';
+  ctx.fillStyle = COLORS.hudAccent;
+  ctx.textAlign = 'center';
+  ctx.fillText(`LEVEL ${level}`, canvas.width / 2, pad + 18);
+  ctx.font = '13px monospace';
+  ctx.fillStyle = COLORS.hud;
+  ctx.fillText(`${remaining} ENEMIES LEFT`, canvas.width / 2, pad + 36);
+
+  // Score
+  ctx.font = 'bold 20px monospace';
+  ctx.fillStyle = COLORS.hudAccent;
+  ctx.textAlign = 'right';
+  ctx.fillText(score.toString().padStart(6, '0'), canvas.width - pad, pad + 20);
+  ctx.font = '11px monospace';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('SCORE', canvas.width - pad, pad + 34);
+  ctx.textAlign = 'left';
+}
+
+function drawHeart(x, y, r) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, r * 0.3);
+  ctx.bezierCurveTo(-r, -r * 0.3, -r, r * 0.6, 0, r * 1.2);
+  ctx.bezierCurveTo(r, r * 0.6, r, -r * 0.3, 0, r * 0.3);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawMenuBackground() {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawGrid();
+
+  // Animated fake enemies in bg
+  const count = 12;
+  for (let i = 0; i < count; i++) {
+    const t = menuAnimT * 0.3 + i * (Math.PI * 2 / count);
+    const rx = canvas.width / 2 + Math.cos(t) * (canvas.width * 0.35);
+    const ry = canvas.height / 2 + Math.sin(t * 0.7) * (canvas.height * 0.3);
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = [COLORS.grunt, COLORS.runner, COLORS.bruiser][i % 3];
+    ctx.beginPath(); ctx.arc(rx, ry, 10 + i % 3 * 5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawMenu() {
+  drawMenuBackground();
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+
+  // Title box
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  roundRect(ctx, cx - 260, cy - 180, 520, 360, 12);
+  ctx.fill();
+  ctx.strokeStyle = COLORS.menuTitle;
+  ctx.lineWidth = 2;
+  roundRect(ctx, cx - 260, cy - 180, 520, 360, 12);
+  ctx.stroke();
+
+  // Title
+  const pulse = 0.9 + Math.sin(menuAnimT * 3) * 0.1;
+  ctx.save();
+  ctx.translate(cx, cy - 100);
+  ctx.scale(pulse, pulse);
+  ctx.font = 'bold 52px monospace';
+  ctx.fillStyle = COLORS.menuTitle;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = COLORS.menuTitle;
+  ctx.shadowBlur = 20;
+  ctx.fillText('TOP-DOWN', 0, 0);
+  ctx.fillText('SHOOTER', 0, 56);
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  // Subtitle
+  ctx.font = '15px monospace';
+  ctx.fillStyle = '#aaa';
+  ctx.textAlign = 'center';
+  ctx.fillText('WASD / ARROWS TO MOVE  •  MOUSE TO AIM  •  CLICK TO SHOOT', cx, cy + 20);
+
+  // Start button
+  const bw = 200, bh = 50;
+  const bx = cx - bw / 2, by = cy + 60;
+  const btnPulse = 0.8 + Math.sin(menuAnimT * 4) * 0.2;
+  ctx.fillStyle = `rgba(0,229,255,${btnPulse})`;
+  roundRect(ctx, bx, by, bw, bh, 8);
+  ctx.fill();
+  ctx.strokeStyle = COLORS.menuTitle;
+  ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, bw, bh, 8);
+  ctx.stroke();
+  ctx.font = 'bold 22px monospace';
+  ctx.fillStyle = '#000';
+  ctx.textAlign = 'center';
+  ctx.fillText('START GAME', cx, by + 33);
+
+  // Enemy legend
+  ctx.font = '13px monospace';
+  ctx.textAlign = 'left';
+  const legendY = cy + 140;
+  const types = [
+    { label: 'GRUNT',   color: COLORS.grunt,   pts: '10pts' },
+    { label: 'RUNNER',  color: COLORS.runner,  pts: '20pts' },
+    { label: 'BRUISER', color: COLORS.bruiser, pts: '50pts' },
+  ];
+  types.forEach((t, i) => {
+    const lx = cx - 160 + i * 110;
+    ctx.fillStyle = t.color;
+    ctx.beginPath(); ctx.arc(lx, legendY - 4, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ccc';
+    ctx.fillText(t.label, lx + 12, legendY);
+    ctx.fillStyle = '#666';
+    ctx.fillText(t.pts, lx + 12, legendY + 16);
+  });
+}
+
+function drawLevelComplete() {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawGrid();
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  roundRect(ctx, cx - 220, cy - 120, 440, 240, 12);
+  ctx.fill();
+  ctx.strokeStyle = COLORS.levelComplete;
+  ctx.lineWidth = 2;
+  roundRect(ctx, cx - 220, cy - 120, 440, 240, 12);
+  ctx.stroke();
+
+  ctx.font = 'bold 42px monospace';
+  ctx.fillStyle = COLORS.levelComplete;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = COLORS.levelComplete;
+  ctx.shadowBlur = 16;
+  ctx.fillText('WAVE CLEAR!', cx, cy - 50);
+  ctx.shadowBlur = 0;
+
+  ctx.font = '20px monospace';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`LEVEL ${level} COMPLETE`, cx, cy);
+
+  ctx.font = '16px monospace';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText(`WAVE SCORE: +${waveScore}`, cx, cy + 30);
+  ctx.fillText(`TOTAL: ${score}`, cx, cy + 52);
+
+  ctx.font = '13px monospace';
+  ctx.fillStyle = COLORS.hudAccent;
+  ctx.fillText(`NEXT WAVE IN ${Math.ceil(levelCompleteTimer)}...`, cx, cy + 90);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawGrid();
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.8)';
+  roundRect(ctx, cx - 230, cy - 150, 460, 300, 12);
+  ctx.fill();
+  ctx.strokeStyle = COLORS.gameOver;
+  ctx.lineWidth = 2;
+  roundRect(ctx, cx - 230, cy - 150, 460, 300, 12);
+  ctx.stroke();
+
+  ctx.font = 'bold 50px monospace';
+  ctx.fillStyle = COLORS.gameOver;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = COLORS.gameOver;
+  ctx.shadowBlur = 20;
+  ctx.fillText('GAME OVER', cx, cy - 70);
+  ctx.shadowBlur = 0;
+
+  ctx.font = '22px monospace';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`LEVEL REACHED: ${level}`, cx, cy - 20);
+  ctx.fillText(`FINAL SCORE: ${score}`, cx, cy + 12);
+
+  // Replay button
+  const bw = 220, bh = 50;
+  const bx = cx - bw / 2, by = cy + 50;
+  ctx.fillStyle = COLORS.gameOver;
+  roundRect(ctx, bx, by, bw, bh, 8);
+  ctx.fill();
+  ctx.font = 'bold 20px monospace';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('PLAY AGAIN', cx, by + 33);
+}
+
+// --- Draw ---
+function draw() {
+  if (state === STATES.MENU) { drawMenu(); return; }
+  if (state === STATES.LEVEL_COMPLETE) { drawLevelComplete(); return; }
+  if (state === STATES.GAME_OVER) { drawGameOver(); return; }
+
+  // Screen shake
+  const sx = screenShake > 0 ? (Math.random() - 0.5) * screenShake * 20 : 0;
+  const sy = screenShake > 0 ? (Math.random() - 0.5) * screenShake * 20 : 0;
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  // Background
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(-20, -20, canvas.width + 40, canvas.height + 40);
+  drawGrid();
+
+  // Particles behind
+  particles.forEach(drawParticle);
+
+  // Enemies
+  enemies.forEach(drawEnemy);
+
+  // Bullets
+  bullets.forEach(drawBullet);
+
+  // Player
+  if (state === STATES.PLAYING) drawPlayer();
+
+  ctx.restore();
+
+  // HUD (no shake)
+  if (state === STATES.PLAYING) drawHUD();
+}
+
+// --- Loop ---
+function loop(ts) {
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(ts => { lastTime = ts; requestAnimationFrame(loop); });
+</script>
+</body>
+</html>
