@@ -61,5 +61,5 @@ git push
 
 Commit messages must be clear and specific (e.g. `Add screen shake on player hit`, not `Update shooter`).
 
-Remote: `https://github.com/valljo888ai/top-down-shooter`
+Remote: `https://github.com/valljo888ai/browser-games`
 Default branch: `master`
