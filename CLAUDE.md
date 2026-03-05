@@ -41,7 +41,13 @@ Game loop order each frame: `update(dt)` → `draw()`
 
 ## Git & GitHub Workflow
 
-Every change should be committed and pushed:
+**Commit and push after every meaningful unit of work.** This is non-negotiable — it ensures we never lose progress and can always revert to a known-good state. Do not batch multiple features into one commit; commit as you go.
+
+Commit triggers (non-exhaustive):
+- A new feature or mechanic is added
+- A bug is fixed
+- A new game file is created
+- Any visible change to gameplay or UI is complete
 
 ```bash
 git add <file>
@@ -52,6 +58,8 @@ Optional longer description.
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 git push
 ```
+
+Commit messages must be clear and specific (e.g. `Add screen shake on player hit`, not `Update shooter`).
 
 Remote: `https://github.com/valljo888ai/top-down-shooter`
 Default branch: `master`
